@@ -1,0 +1,30 @@
+# Force LF on everything that runs inside a container.
+#
+# A shell script with CRLF endings fails with "No such file or directory" -
+# the kernel reads the shebang as `/bin/bash\r`, which does not exist. The
+# error names the script, not the interpreter, so it reads like a missing file
+# or a permissions problem and costs an hour the first time you hit it.
+#
+# Windows contributors with core.autocrlf=true will otherwise commit CRLF.
+* text=auto eol=lf
+
+*.sh            text eol=lf
+*.bash          text eol=lf
+Dockerfile      text eol=lf
+Containerfile*  text eol=lf
+Makefile        text eol=lf
+*.py            text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.xml           text eol=lf
+*.rules         text eol=lf
+*.md            text eol=lf
+.hadolint.yaml  text eol=lf
+.trivyignore    text eol=lf
+.dockerignore   text eol=lf
+
+# Keep binaries untouched.
+*.png binary
+*.jpg binary
+*.gz  binary
+*.tar binary

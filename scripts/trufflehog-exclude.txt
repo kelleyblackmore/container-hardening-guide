@@ -1,0 +1,21 @@
+# Paths TruffleHog skips during the filesystem scan (regex, one per line).
+#
+# Keep this list SHORT and justify every entry. An exclude file is how a secret
+# scanner gets quietly switched off one directory at a time - the usual path is
+# "exclude the noisy directory" followed six months later by "the credential was
+# in the excluded directory".
+#
+# Never exclude: .env*, config/, secrets/, charts/, terraform/, or any path
+# containing real deployment configuration.
+
+# Scan output. Contains copies of the findings themselves, so scanning it just
+# re-reports everything at one level of indirection.
+^results/
+
+# Downloaded scanner binaries.
+^\.tools/
+
+# Git object store. The `trufflehog git` pass in scan-secrets.sh already walks
+# history properly; scanning the packfiles as raw files produces unusable
+# duplicates with no commit attribution.
+^\.git/

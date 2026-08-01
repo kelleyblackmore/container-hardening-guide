@@ -1,0 +1,55 @@
+# =============================================================================
+#  .dockerignore  --  requirement 2.9 (no confidential data in the build)
+# =============================================================================
+#  The build context is everything the daemon can see. `COPY . /app` copies all
+#  of it, and files you never named end up in a layer that ships worldwide:
+#  .git (with its full history), .env, kubeconfig, ~/.aws that got copied in for
+#  a test, terraform.tfstate with its plaintext values, id_rsa.
+#
+#  This file is a DENY LIST, which means it fails open: anything you forget to
+#  list is included. That is backwards for a security control. Prefer an
+#  allow-list posture in the Dockerfile itself - copy named files
+#  (`COPY app/go.mod ./`) rather than `COPY . .` - and treat .dockerignore as
+#  the backstop. The hardened Dockerfile in this directory does exactly that.
+# =============================================================================
+
+# Version control - carries every secret ever committed, including "deleted" ones
+.git
+.gitignore
+.github
+
+# Local environment and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+.netrc
+.npmrc
+.docker/config.json
+.aws/
+.kube/
+kubeconfig
+
+# Infrastructure state - Terraform state files store secrets in plaintext
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# Build output and scan results
+results/
+.tools/
+*.log
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Documentation - no reason for it to be in the image
+*.md
+docs/

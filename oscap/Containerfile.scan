@@ -1,0 +1,92 @@
+# syntax=docker/dockerfile:1
+# =============================================================================
+#  THE SCANNER LAYER
+# =============================================================================
+#  This builds a THROWAWAY image: the hardened image plus OpenSCAP and the
+#  DISA STIG content. It is used to evaluate compliance and is NEVER shipped.
+#
+#  Why a layer on top instead of scanning from outside?
+#    A container image is not a running system. Most STIG checks read files,
+#    query the RPM database, and inspect configuration - all of which need to
+#    happen with the image's own filesystem as the root. Two ways to do that:
+#
+#      (a) `oscap-podman <image>`  - mounts the image and scans it offline.
+#          Cleanest option, but requires podman and the oscap-podman wrapper.
+#      (b) FROM <image> + install oscap + run it inside.   <-- what we do here
+#          Works identically under docker, podman, and any CI runner. The cost
+#          is that the scanner packages themselves are present during the scan,
+#          which can shift a handful of "installed packages" findings. Note
+#          that in your report.
+#
+#    docs/05-openscap-and-tailoring.md walks through both.
+#
+#  UBI 9 repositories ship `openscap-scanner` but NOT `scap-security-guide`
+#  (the DISA RHEL 9 STIG datastream) or `openscap-utils` (which provides
+#  `autotailor`). We pull those two from the Rocky Linux 9 repositories. Rocky
+#  is a bug-for-bug RHEL 9 rebuild, so its scap-security-guide package carries
+#  the same DISA STIG content that RHEL 9 ships.
+#
+#  In a DoD environment you would instead mirror the official Red Hat
+#  scap-security-guide RPM, or drop in the DISA-published SCAP benchmark
+#  content from https://public.cyber.mil/stigs/scap/.
+# =============================================================================
+ARG BASE_IMAGE=localhost/helloctr:latest
+FROM ${BASE_IMAGE}
+
+# The scan must read /etc/shadow (mode 0000) and query the RPM database, so it
+# runs as root. This is fine: the scanner image is never deployed and never
+# published - it exists for the duration of one `docker run`.
+#
+# hadolint DL3002 ("last USER should not be root") is correct as a general rule
+# and wrong here, so it is suppressed inline with the reason attached rather
+# than added to the global ignore list. If you find yourself writing this
+# suppression in an image you actually ship, you are writing it in the wrong file.
+# hadolint ignore=DL3002
+USER 0
+
+# Rocky 9 repositories, used ONLY for the SCAP content and tooling.
+#
+# excludepkgs=openssl* is load-bearing, not tidiness. Without it dnf pulls
+# Rocky's newer openssl stack in as a dependency, and Rocky's
+# `openssl-fips-provider` ships /usr/lib64/ossl-modules/fips.so, the same path
+# that UBI's `openssl-fips-provider-so` already owns. Different package names,
+# same file, so dnf does not treat it as an upgrade - the transaction test fails
+# with a file conflict. Excluding openssl from the Rocky side keeps the base
+# image's own crypto stack in place, which is also what you want: the scan
+# should evaluate the image as built, not a hybrid of two distributions.
+RUN cat > /etc/yum.repos.d/rocky-scap.repo <<'EOF'
+[rocky-baseos]
+name=Rocky Linux 9 - BaseOS
+baseurl=https://dl.rockylinux.org/pub/rocky/9/BaseOS/x86_64/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+enabled=1
+excludepkgs=openssl*
+[rocky-appstream]
+name=Rocky Linux 9 - AppStream
+baseurl=https://dl.rockylinux.org/pub/rocky/9/AppStream/x86_64/os/
+gpgcheck=1
+gpgkey=https://dl.rockylinux.org/pub/rocky/RPM-GPG-KEY-Rocky-9
+enabled=1
+excludepkgs=openssl*
+EOF
+
+#   openscap-scanner    -> the `oscap` binary
+#   scap-security-guide -> /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml,
+#                          which contains the DISA STIG profile
+#   openscap-utils      -> `autotailor`, which generates the tailoring file
+RUN set -eux; \
+    dnf -y install --setopt=install_weak_deps=0 \
+      openscap-scanner \
+      scap-security-guide \
+      openscap-utils; \
+    test -f /usr/share/xml/scap/ssg/content/ssg-rhel9-ds.xml; \
+    command -v autotailor; \
+    dnf -y clean all
+
+COPY --chmod=0755 oscap/scan.sh                /usr/local/bin/scan.sh
+COPY --chmod=0755 oscap/generate-tailoring.sh  /usr/local/bin/generate-tailoring.sh
+COPY oscap/not-applicable.rules                /scan/oscap/not-applicable.rules
+
+WORKDIR /scan
+ENTRYPOINT ["/usr/local/bin/scan.sh"]

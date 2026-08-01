@@ -1,0 +1,45 @@
+# =============================================================================
+#  .trivyignore  --  CVEs excluded from the gate, WITH A REASON AND AN EXPIRY
+# =============================================================================
+#  This is the "whitelist of findings" that section 4.3.4 of the DISA guide
+#  describes, and the discipline around it is the whole point:
+#
+#    * Every entry needs a justification a human wrote.
+#    * Every entry needs an expiry date. Without one, an exception granted for
+#      "two weeks until upstream patches" is still in the file three years
+#      later, hiding a CVE that has had a fix since 2023.
+#    * Every entry needs an owner.
+#
+#  Trivy honours `# comment` lines and an optional `exp:YYYY-MM-DD` field. Grype
+#  uses a different format (.grype.yaml with an `ignore:` block) - keep the two
+#  in sync or your two scanners will disagree for reasons that have nothing to
+#  do with their matching logic.
+#
+#  What belongs here: a CVE the vendor has marked will-not-fix, or one that is
+#  provably unreachable in your configuration, with the analysis recorded.
+#  What does not: a CVE you have not looked at, or one you cannot fix before
+#  the release. That second one is a risk acceptance and goes to your AO as a
+#  POA&M. See docs/12-waivers-and-poam.md.
+#
+#  Format:
+#    CVE-YYYY-NNNNN exp:YYYY-MM-DD
+#    # owner:   <team or person>
+#    # finding: <what it is>
+#    # why:     <why it does not apply here, or what compensates>
+#    # review:  <what has to happen to remove this line>
+# =============================================================================
+
+# The list is intentionally EMPTY. An empty ignore file with the process written
+# down beats a populated one with the process implied.
+#
+# Worked example of an acceptable entry, kept commented:
+#
+# CVE-2024-00000 exp:2026-09-01
+# # owner:   platform-team
+# # finding: heap overflow in libfoo's XML parser
+# # why:     Red Hat rates this Low and will not fix in RHEL 9. The image
+# #          contains libfoo only as a transitive dependency of libbar; the XML
+# #          parsing entry point is not compiled in (verified: `nm -D` shows no
+# #          foo_xml_parse symbol) and the application never calls it.
+# # review:  Remove when libbar 2.x lands, which drops the libfoo dependency
+# #          entirely. Tracked in JIRA PLAT-1234.

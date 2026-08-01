@@ -1,0 +1,122 @@
+# =============================================================================
+# DISA RHEL 9 STIG - rules Not Applicable to a CONTAINER image
+# =============================================================================
+# This file is the SOURCE for the tailoring ("answer") file. Every line that is
+# not blank and not a comment is a rule id that generate-tailoring.sh feeds to
+# `autotailor -u`, which marks it "notselected" so it is excluded from the
+# compliance score. The comment block immediately ABOVE each rule id is the
+# Not-Applicable justification, and it is copied verbatim into the generated
+# XML so the assessor reads your reasoning inside the artifact itself.
+#
+# ---------------------------------------------------------------------------
+# THE RULE FOR ADDING SOMETHING TO THIS FILE
+# ---------------------------------------------------------------------------
+# A rule belongs here when it is TECHNICALLY IMPOSSIBLE or MEANINGLESS to
+# implement inside a container image, because the thing it controls belongs to
+# the host, the node, or the orchestrator.
+#
+# A rule does NOT belong here because:
+#   - it is annoying to fix
+#   - the fix broke something and you did not investigate why
+#   - you are behind schedule
+#
+# Those are RISK ACCEPTANCE decisions. They go through your AO as a waiver or a
+# POA&M, not into this file. Deselecting a rule you simply did not fix hides it
+# from the score and from your own dashboards - which is precisely the failure
+# mode that makes people distrust compliance automation.
+# See docs/12-waivers-and-poam.md.
+#
+# ---------------------------------------------------------------------------
+# YOU PROBABLY NEED FEWER ENTRIES THAN YOU THINK
+# ---------------------------------------------------------------------------
+# OpenSCAP already resolves ~400 host-only rules to "notapplicable" on its own,
+# using the CPE applicability logic baked into the SSG content: bootloader,
+# disk partitioning, GUI/GNOME, kernel sysctls set at boot, auditd-as-a-service,
+# FIPS kernel mode, and so on. Those never appear as FAIL, so they must NOT be
+# listed here. Only list a rule that OpenSCAP scores as FAIL and that a human
+# has determined is genuinely Not Applicable.
+#
+# Workflow: run the BASELINE scan first, read results/baseline/failed-rules.txt,
+# and adjudicate each entry one at a time.
+# =============================================================================
+
+
+# --- ACTIVE: Not Applicable, would otherwise be scored FAIL -------------------
+
+# DNS resolver configuration. Inside a container /etc/resolv.conf is generated
+# and bind-mounted at runtime by the container engine or by the kubelet. Whatever
+# the image ships is overwritten before the first process starts, so the setting
+# cannot be enforced from the image. SSG ships no automated remediation for this
+# rule. The control is satisfied at the node and cluster DNS layer.
+xccdf_org.ssgproject.content_rule_network_configure_name_resolution
+
+# System-wide crypto policy set to FIPS:STIG. Applying it requires the kernel to
+# be running in FIPS mode (fips-mode-setup --enable, which rewrites the
+# bootloader and regenerates the initramfs, then reboots) plus the STIG crypto
+# sub-policy module. A container has no kernel of its own - it uses the node's -
+# so `update-crypto-policies --set FIPS:STIG` fails here with "FIPS mode is not
+# enabled". FIPS is a node control that the container inherits; verify it on the
+# node, not in the image.
+xccdf_org.ssgproject.content_rule_configure_crypto_policy
+
+
+# --- TEMPLATE ----------------------------------------------------------------
+# Uncomment an entry below only if a future SSG content release stops
+# auto-detecting it as notapplicable and starts scoring it FAIL. Each one has
+# its justification written already. Leaving them commented keeps the answer
+# file honest: it lists only decisions that are actually load-bearing today.
+
+# The bootloader belongs to the node. A container has no GRUB, no UEFI, and no
+# boot process - it is a process tree in a namespace.
+#xccdf_org.ssgproject.content_rule_grub2_password
+#xccdf_org.ssgproject.content_rule_grub2_uefi_password
+#xccdf_org.ssgproject.content_rule_grub2_audit_argument
+
+# Filesystem layout and separate partitions are decided by the node's storage
+# configuration. An image layer cannot create a mount point that the runtime
+# will honour.
+#xccdf_org.ssgproject.content_rule_partition_for_tmp
+#xccdf_org.ssgproject.content_rule_partition_for_var
+#xccdf_org.ssgproject.content_rule_partition_for_var_log_audit
+#xccdf_org.ssgproject.content_rule_partition_for_home
+
+# The audit daemon runs on the node and captures syscalls for every container on
+# it. Running auditd inside an unprivileged container is not possible (it needs
+# CAP_AUDIT_CONTROL and a netlink socket the namespace does not provide) and
+# would produce duplicate, unattributable records if it were.
+#xccdf_org.ssgproject.content_rule_service_auditd_enabled
+#xccdf_org.ssgproject.content_rule_package_audit_installed
+
+# The host firewall is not the container's concern. Network reachability is
+# enforced by the orchestrator: NetworkPolicy, the service mesh, and the node's
+# own firewall. See k8s/networkpolicy.yaml.
+#xccdf_org.ssgproject.content_rule_service_firewalld_enabled
+#xccdf_org.ssgproject.content_rule_package_firewalld_installed
+
+# Kernel tunables are global to the node. A sysctl set inside an unprivileged
+# container either fails outright or, in the few namespaced cases, does not do
+# what the rule intends. Set these on the node.
+#xccdf_org.ssgproject.content_rule_sysctl_kernel_randomize_va_space
+#xccdf_org.ssgproject.content_rule_sysctl_kernel_dmesg_restrict
+#xccdf_org.ssgproject.content_rule_sysctl_net_ipv4_conf_all_accept_redirects
+
+# Time synchronisation is a node service. Every container reads the node clock;
+# running chronyd in a container is both unnecessary and unable to set the time.
+#xccdf_org.ssgproject.content_rule_package_chrony_installed
+#xccdf_org.ssgproject.content_rule_service_chronyd_enabled
+
+# A graphical desktop is never present in a server base image.
+#xccdf_org.ssgproject.content_rule_package_xorg-x11-server-common_removed
+#xccdf_org.ssgproject.content_rule_dconf_gnome_screensaver_idle_delay
+
+# AIDE performs file integrity monitoring against a baseline database. A
+# container's root filesystem is immutable by design (readOnlyRootFilesystem,
+# requirement 3.7) and the image digest already provides a stronger integrity
+# guarantee than an in-container AIDE database that is rebuilt on every deploy.
+#xccdf_org.ssgproject.content_rule_package_aide_installed
+#xccdf_org.ssgproject.content_rule_aide_build_database
+
+# USB, Bluetooth, and other physical device controls: there is no physical
+# hardware attached to a namespace.
+#xccdf_org.ssgproject.content_rule_kernel_module_usb-storage_disabled
+#xccdf_org.ssgproject.content_rule_kernel_module_bluetooth_disabled

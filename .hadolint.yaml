@@ -1,0 +1,61 @@
+# =============================================================================
+#  hadolint configuration
+# =============================================================================
+#  hadolint is a Dockerfile linter. It parses the Dockerfile into an AST, runs
+#  its own rules (DL####) against the instructions, and runs ShellCheck (SC####)
+#  against the contents of every RUN.
+#
+#  It is a STATIC LINTER. It reads text. It cannot tell you whether the image
+#  you built is safe - only whether the instructions that built it are shaped
+#  the way they ought to be. It will not catch a CVE, a secret in a base layer,
+#  a setuid binary the base image shipped, or a STIG finding. Those need trivy,
+#  grype, trufflehog, and OpenSCAP respectively. See docs/06-hadolint.md.
+#
+#  Docs: docs/06-hadolint.md   Rule list: https://github.com/hadolint/hadolint
+# =============================================================================
+
+# Severity that causes a non-zero exit. error | warning | info | style | none
+# We fail on warning: hadolint classifies "no version pin" and "no USER" as
+# warnings, and those are exactly the ones worth blocking a merge over.
+failure-threshold: warning
+
+# ----------------------------------------------------------------------------
+# Registries that a FROM is allowed to reference. Any FROM outside this list is
+# reported (DL3026). This is the linter enforcing requirement 2.17 - base images
+# come from a trusted and approved source.
+#
+# In a DoD pipeline this list is ONE entry: registry1.dso.mil. The others are
+# here because this is a public teaching repo that has to build for readers who
+# do not have an Iron Bank account.
+# ----------------------------------------------------------------------------
+allowed-registries:
+  - registry1.dso.mil          # Iron Bank - the approved DoD source
+  - registry.access.redhat.com # Red Hat UBI - signed, publicly redistributable
+  - registry.redhat.io
+  - docker.io                  # teaching repo only; remove for DoD work
+
+# ----------------------------------------------------------------------------
+# Rule overrides. Every ignore needs a written reason. An .hadolint.yaml with a
+# long unexplained ignore list is how a linter quietly stops linting.
+# ----------------------------------------------------------------------------
+ignored:
+  # DL3041 - "specify version with dnf install -y <pkg>-<version>"
+  # Pinning every RPM makes the build reproducible (requirement 2.4) but also
+  # makes it rot: the pinned version is superseded and the build starts failing
+  # or, worse, keeps installing a version with a known CVE (requirement 2.15).
+  # The pattern we use instead is `dnf upgrade --security` on every build plus a
+  # digest-pinned base image, so what we install is "the current patched set"
+  # and the base is immutable. If your organisation requires RPM pinning, delete
+  # this ignore and generate the pins from a manifest.
+  - DL3041
+
+# Rules deliberately NOT ignored, to be clear about what is being enforced:
+#   DL3002  last USER must not be root                    -> requirement 2.2
+#   DL3006  always tag the version of an image            -> requirement 2.14
+#   DL3020  use COPY instead of ADD for files             -> requirement 2.4
+#   DL3026  use only an allowed registry                  -> requirement 2.17
+#   DL3025  use JSON notation for CMD/ENTRYPOINT          -> signal handling
+#   DL3009  delete the apt-get lists after installing     -> requirement 2.8
+#   DL3059  multiple consecutive RUN instructions         -> requirement 2.8
+#   DL4006  set -o pipefail before a pipe in RUN          -> requirement 2.4
+#   SC2086  quote variables to prevent word splitting

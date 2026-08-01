@@ -1,0 +1,23 @@
+# Scan output - regenerate it, do not commit it. The exception is a release
+# artifact you deliberately publish (an ARF for an assessor), which belongs in
+# a release, not in the tree.
+results/
+
+# Locally installed scanners
+.tools/
+
+# Never commit these. If one appears here, the .gitignore is not what saved
+# you - assume it was already pushed and rotate it.
+.env
+.env.*
+*.pem
+*.key
+kubeconfig
+*.tfstate
+*.tfstate.backup
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,382 @@
+# =============================================================================
+#  CI - the DevSecOps pipeline from section 4 of the DISA guide, as YAML
+# =============================================================================
+#  Section 4.3 breaks the pipeline into Coding/Testing, Building, Securing,
+#  Publishing, Releasing, Configuring, Monitoring. The jobs below map onto it:
+#
+#    lint          -> 4.3.1 Coding and Testing   (static analysis)
+#    build         -> 4.3.2 Building             (reproducible, no network reach)
+#    secrets       -> 4.3.3 Securing             (credential detection)
+#    vulnerability -> 4.3.3 Securing             (two independent scanners)
+#    evidence      -> 4.3.3 Securing             (assert section 2 requirements)
+#    k8s-policy    -> 4.3.6 Configuring          (deployment manifests)
+#
+#  4.3.4 Publishing and 4.3.5 Releasing (sign, checksum, push to the registry)
+#  are deliberately NOT here - this repo publishes nothing. docs/09 describes
+#  what those stages do and shows the cosign steps you would add.
+#
+#  Monitoring (4.3.7) is the scheduled re-scan in stig.yml plus the daily
+#  rebuild: an image that was clean at build time becomes vulnerable on its own
+#  as new CVEs are published, with no commit involved.
+# =============================================================================
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 4.3.7 Monitoring. Weekly, so an image nobody has touched still gets
+    # re-scanned against the current vulnerability data.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: localhost/helloctr:ci
+
+jobs:
+  # ===========================================================================
+  # 4.3.1  Coding and Testing - static analysis of the build files
+  # ===========================================================================
+  lint:
+    name: lint (hadolint + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install hadolint
+        run: |
+          curl -sSfL -o /usr/local/bin/hadolint \
+            "https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64"
+          chmod +x /usr/local/bin/hadolint
+          hadolint --version
+
+      # The hardened Dockerfile must be clean. This gate blocks the merge.
+      - name: hadolint - hardened image (must pass)
+        run: |
+          hadolint --config .hadolint.yaml examples/hardened/Dockerfile
+          hadolint --config .hadolint.yaml oscap/Containerfile.scan
+
+      # The anti-pattern is expected to fail. We run it anyway and print the
+      # output into the job summary, because the interesting part is the gap
+      # between what hadolint catches and what the file actually documents.
+      - name: hadolint - anti-pattern (findings expected)
+        run: |
+          {
+            echo "## hadolint findings on the ANTI-PATTERN Dockerfile"
+            echo ""
+            echo '```'
+            hadolint --no-fail --config .hadolint.yaml examples/insecure/Dockerfile || true
+            echo '```'
+            echo ""
+            echo "The file documents more violations than this. A Dockerfile"
+            echo "linter reads instructions, not the resulting image."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck scripts/*.sh oscap/*.sh examples/hardened/harden/*.sh
+
+  # ===========================================================================
+  # 4.3.2  Building
+  # ===========================================================================
+  build:
+    name: build hardened image
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: examples/hardened
+          file: examples/hardened/Dockerfile
+          tags: ${{ env.IMAGE }}
+          push: false
+          load: true
+          # [2.8] Do not reuse a cache across runs in the security pipeline. A
+          # cache hit is a layer that was NOT rebuilt, which means packages that
+          # were NOT re-patched.
+          no-cache: true
+          pull: true
+          # provenance/sbom attestations are deliberately off here: buildx
+          # cannot attach them when using `load: true` (the docker exporter).
+          # In the real publishing stage you push to a registry with the OCI
+          # exporter and turn both on - docs/09-devsecops-pipeline.md shows the
+          # push job with attestations and cosign signing.
+          provenance: false
+
+      - name: Save image for downstream jobs
+        run: docker save "$IMAGE" -o /tmp/image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: /tmp/image.tar
+          retention-days: 1
+
+  # ===========================================================================
+  # 4.3.3  Securing - assert the section 2 requirements against the built image
+  # ===========================================================================
+  # These are pass/fail checks on the image CONFIG and CONTENT, which is what an
+  # assessor can verify independently. They are cheap, deterministic, and they
+  # catch the regressions a scanner will not: somebody deleting the USER line,
+  # somebody adding EXPOSE 22, somebody reintroducing a setuid binary.
+  evidence:
+    name: evidence (DISA section 2 assertions)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: image, path: /tmp }
+      - run: docker load -i /tmp/image.tar
+
+      - name: '[2.2] runs as a non-privileged user'
+        run: |
+          user="$(docker inspect --format '{{.Config.User}}' "$IMAGE")"
+          echo "USER = ${user:-<empty>}"
+          [ -n "$user" ] || { echo "::error::no USER set - the container would run as root"; exit 1; }
+          uid="${user%%:*}"
+          case "$uid" in
+            0|root) echo "::error::USER is root"; exit 1 ;;
+            ''|*[!0-9]*) echo "::warning::USER is not numeric; runAsNonRoot cannot verify it at admission" ;;
+          esac
+
+      - name: '[2.5][2.13] exposes only non-privileged ports'
+        run: |
+          ports="$(docker inspect --format '{{range $p,$_ := .Config.ExposedPorts}}{{$p}} {{end}}' "$IMAGE")"
+          echo "EXPOSE = ${ports:-<none>}"
+          for p in $ports; do
+            n="${p%%/*}"
+            [ "$n" -ge 1024 ] || { echo "::error::privileged port exposed: $p"; exit 1; }
+          done
+
+      - name: '[2.6] has a process health check'
+        run: |
+          docker inspect --format '{{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{else}}MISSING{{end}}' "$IMAGE"
+          docker inspect --format '{{if .Config.Healthcheck}}ok{{end}}' "$IMAGE" | grep -q ok \
+            || { echo "::error::no HEALTHCHECK instruction"; exit 1; }
+
+      - name: '[2.1] no SSH daemon'
+        run: |
+          docker run --rm --entrypoint /bin/bash "$IMAGE" -c '
+            test ! -e /usr/sbin/sshd || { echo "sshd present"; exit 1; }
+            ! rpm -q openssh-server >/dev/null 2>&1 || { echo "openssh-server installed"; exit 1; }
+            echo "ok: no sshd, no openssh-server"'
+
+      # --user 0 on purpose: as the app user, find cannot traverse /root or
+      # /var/lib/rhsm, so a setuid binary hiding in an unreadable directory
+      # would be missed and the check would report a false clean.
+      - name: '[2.3] no setuid/setgid executables'
+        run: |
+          docker run --rm --user 0 --entrypoint /bin/bash "$IMAGE" -c '
+            found="$(find / -xdev -perm /6000 -type f)"
+            if [ -n "$found" ]; then echo "setuid/setgid files remain:"; echo "$found"; exit 1; fi
+            echo "ok: no setuid/setgid files"'
+
+      - name: '[2.9][2.18] no credentials in the layer history'
+        run: |
+          if docker history --no-trunc "$IMAGE" \
+               | grep -Ei '(password=|secret=|token=|api[_-]?key=|BEGIN [A-Z ]*PRIVATE KEY)'; then
+            echo "::error::credential-shaped string found in the image history"
+            exit 1
+          fi
+          echo "ok: nothing credential-shaped in the layer history"
+
+      - name: '[3.7] runs with a read-only root filesystem and no capabilities'
+        run: |
+          # If the image cannot start under the restrictions the deployment
+          # applies, the deployment manifest is a lie. Test it here, not in prod.
+          docker run -d --name ro-test \
+            --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m \
+            --cap-drop=ALL --security-opt=no-new-privileges \
+            --user 1001:1001 -p 18080:8080 "$IMAGE"
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs ro-test
+          [ "${ok:-0}" = "1" ] || { echo "::error::service did not become healthy under restrictions"; exit 1; }
+          curl -fsS http://127.0.0.1:18080/ | tee /dev/stderr | grep -q '^uid=1001'
+          docker rm -f ro-test
+
+      - name: Image facts for the job summary
+        run: |
+          {
+            echo "## Hardened image facts"
+            echo ""
+            echo "| Property | Value |"
+            echo "|---|---|"
+            echo "| Size | $(docker inspect --format '{{.Size}}' "$IMAGE" | numfmt --to=iec) |"
+            echo "| Layers | $(docker inspect --format '{{len .RootFS.Layers}}' "$IMAGE") |"
+            echo "| User | $(docker inspect --format '{{.Config.User}}' "$IMAGE") |"
+            echo "| Packages | $(docker run --rm --entrypoint /bin/bash "$IMAGE" -c 'rpm -qa | wc -l') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # 4.3.3  Securing - credential detection
+  # ===========================================================================
+  secrets:
+    name: secrets (trufflehog)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # TruffleHog's git mode needs the history, not just the tip commit.
+          # The default shallow checkout would scan one commit and report clean.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with: { name: image, path: /tmp }
+      - run: docker load -i /tmp/image.tar
+
+      - name: Install trufflehog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trufflehog --version
+
+      # Gate on VERIFIED findings only. A verified credential is one TruffleHog
+      # confirmed with the provider - it is live, and it is an incident. Gating
+      # on unverified findings in a repo that deliberately contains fake keys
+      # (examples/insecure) would fail every run and teach everyone to ignore it.
+      - name: Scan git history and working tree (verified only - blocking)
+        run: |
+          trufflehog git "file://$PWD" --only-verified --fail
+          trufflehog filesystem "$PWD" --only-verified --fail \
+            --exclude-paths scripts/trufflehog-exclude.txt
+
+      - name: Scan the built image layers (verified only - blocking)
+        run: trufflehog docker --image "docker://$IMAGE" --only-verified --fail
+
+      # Non-blocking demonstration: the anti-pattern Dockerfile is full of
+      # credential-shaped strings. This shows what unverified detection looks
+      # like without failing the build on fake keys.
+      - name: Demonstrate detection on the anti-pattern (non-blocking)
+        run: |
+          {
+            echo "## TruffleHog on examples/insecure (unverified detectors)"
+            echo ""
+            echo '```'
+            trufflehog filesystem examples/insecure --results=verified,unknown,unverified 2>&1 | tail -40 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
+  # 4.3.3  Securing - two independent vulnerability scanners
+  # ===========================================================================
+  vulnerability:
+    name: vulnerability (trivy + grype)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      security-events: write   # required to upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: image, path: /tmp }
+      - run: docker load -i /tmp/image.tar
+
+      - name: Install trivy, grype, syft
+        run: |
+          curl -sfL  https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh              | sudo sh -s -- -b /usr/local/bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh               | sudo sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM
+        run: |
+          mkdir -p results/vulns
+          syft "$IMAGE" -o cyclonedx-json=results/vulns/sbom.cdx.json \
+                        -o spdx-json=results/vulns/sbom.spdx.json
+          echo "components: $(jq '.components | length' results/vulns/sbom.cdx.json)"
+
+      # Run both scanners and diff them. Section 4.3.3: "It is necessary to
+      # utilize more than one tool to scan since results can differ."
+      - name: Scan (non-blocking, produces the report)
+        run: ./scripts/scan-vulns.sh "$IMAGE"
+        env:
+          OUT: results/vulns
+          SEVERITY: HIGH,CRITICAL
+          IGNORE_UNFIXED: 'true'
+
+      # The gate. Fails on fixable HIGH/CRITICAL - "fixable" because those are
+      # the ones a rebuild resolves. Unfixed findings are reported above and
+      # handled as risk decisions, not as build failures. See docs/08.
+      - name: Gate on fixable HIGH/CRITICAL
+        run: |
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed \
+                --exit-code 1 --format table "$IMAGE"
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results/vulns/trivy.sarif
+          category: trivy
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulnerability-reports
+          path: results/vulns/
+          retention-days: 30
+
+  # ===========================================================================
+  # 4.3.6  Configuring - the deployment manifests are code and get reviewed too
+  # ===========================================================================
+  k8s-policy:
+    name: k8s manifests (kube-linter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kube-linter
+        run: |
+          curl -sSfL -o /tmp/kube-linter.tar.gz \
+            https://github.com/stackrox/kube-linter/releases/latest/download/kube-linter-linux.tar.gz
+          tar -xzf /tmp/kube-linter.tar.gz -C /tmp
+          sudo install /tmp/kube-linter /usr/local/bin/kube-linter
+          kube-linter version
+
+      # kube-linter's default checks line up closely with DISA section 3:
+      # run-as-non-root, no-read-only-root-fs, unset-cpu/memory-requirements,
+      # privileged-container, privilege-escalation-container, no-liveness-probe,
+      # no-readiness-probe, drop-net-raw-capability, sensitive-host-mounts.
+      #
+      # Non-blocking on purpose: kube-linter's default check SET changes between
+      # releases, so pinning a merge gate to "whatever the latest release
+      # considers default" makes the pipeline fail for reasons unrelated to the
+      # manifests. The blocking gate is check-k8s-policy.py below, which asserts
+      # the DISA section 3 requirements explicitly and does not drift.
+      - name: Lint deployment manifests (advisory)
+        run: |
+          {
+            echo "## kube-linter"
+            echo ""
+            echo '```'
+            kube-linter lint k8s/ 2>&1 || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The blocking gate: our own assertions, one per section 3 requirement.
+      - name: Assert DISA section 3 requirements
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/check-k8s-policy.py k8s/
+
+      - name: Validate against the Kubernetes schema
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp
+          sudo install /tmp/kubeconform /usr/local/bin/kubeconform
+          kubeconform -strict -summary k8s/

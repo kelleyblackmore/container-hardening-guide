@@ -1,0 +1,369 @@
+# =============================================================================
+#  THE ANNOTATED HARDENED DEPLOYMENT
+# =============================================================================
+#  Section 3 of the DISA Container Image Creation and Deployment Guide V2R0.6
+#  covers DEPLOYMENT. Nothing in this file can be fixed by rebuilding the image
+#  and nothing in the image can substitute for it - the two halves are
+#  independent, and an attacker only needs one of them to be wrong.
+#
+#  Every block is tagged [3.x] with the requirement it satisfies. Full text and
+#  CCIs: docs/04-deployment-requirements.md
+#
+#  Apply:   kubectl apply -f k8s/
+#  Lint:    make lint-k8s      (kube-linter)
+# =============================================================================
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: helloctr
+  # [3.11] Label selectors define where and how the workload runs. Labels are
+  #        also what NetworkPolicy, quota, and admission policy select on - an
+  #        unlabelled namespace cannot be governed.
+  labels:
+    app.kubernetes.io/name: helloctr
+    # Pod Security Admission. This is the enforcement backstop for most of
+    # section 3: the API server REJECTS any pod in this namespace that does not
+    # meet the "restricted" standard - no privileged containers, no host
+    # namespaces, no privilege escalation, non-root required, seccomp required,
+    # all capabilities dropped.
+    #
+    # Set all three levels. `enforce` blocks, `audit` records, and `warn` gives
+    # the developer immediate feedback in their kubectl output.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# [2.18] The secret the app reads at runtime. It is mounted as a file, never
+#        baked into the image and never passed as an environment variable
+#        (env vars leak through /proc/<pid>/environ, crash dumps, and any
+#        logging library that dumps the environment on start-up).
+#
+# In production this is not a checked-in manifest - it comes from Vault, Sealed
+# Secrets, SOPS, or an External Secrets operator. A base64 blob in git is not a
+# secret; base64 is an encoding, not encryption. This one exists so the example
+# runs, and its value is deliberately worthless.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: helloctr-token
+  namespace: helloctr
+type: Opaque
+stringData:
+  token: "not-a-real-secret-replace-with-vault-or-external-secrets"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: helloctr
+  namespace: helloctr
+# [3.1] A container must not mount the platform's registry/API endpoint. The
+#       default ServiceAccount token is auto-mounted at
+#       /var/run/secrets/kubernetes.io/serviceaccount and is a live credential
+#       to the Kubernetes API. This app does not talk to the API, so it does not
+#       get a token. Turn this off unless you can name the API call you need.
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: helloctr
+  namespace: helloctr
+  labels:
+    app.kubernetes.io/name: helloctr
+    app.kubernetes.io/component: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: helloctr
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: helloctr
+        app.kubernetes.io/component: api
+        # [3.11] Labels that describe the DATA and the AUDIENCE, not just the
+        #        app. These drive scheduling, network policy, and - in a
+        #        multi-tenant or cross-domain cluster - keep workloads with
+        #        different data sensitivity off the same node.
+        data-classification: unclassified
+        tier: application
+    spec:
+      serviceAccountName: helloctr
+      automountServiceAccountToken: false
+
+      # [3.10] No host namespaces. Each of these, if true, punches a hole
+      #        straight through the isolation boundary:
+      #          hostPID     -> see and signal every process on the node
+      #          hostIPC     -> read shared memory of other workloads
+      #          hostNetwork -> the node's network stack, bypassing all
+      #                         NetworkPolicy, and access to node-local services
+      #                         such as the kubelet and cloud metadata endpoints
+      #        They default to false; state them explicitly so a future edit is
+      #        a visible diff rather than a silent addition.
+      hostPID: false
+      hostIPC: false
+      hostNetwork: false
+
+      # [3.11] Scheduling constraints. Combine with node labels/taints to keep
+      #        this workload on nodes approved for its classification.
+      nodeSelector:
+        kubernetes.io/os: linux
+      # Spread replicas across nodes so one node failure is not an outage.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: helloctr
+
+      securityContext:
+        # [2.2] Enforced a second time at the platform. The image already sets
+        #       USER 1001, but an image can be overridden at deploy time and a
+        #       different image could be substituted by tag. runAsNonRoot makes
+        #       the kubelet REFUSE to start a container whose effective UID is 0.
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        # [3.2] Limit available system calls. The RuntimeDefault profile is the
+        #       container runtime's built-in seccomp filter - it blocks roughly
+        #       50 rarely used and historically dangerous syscalls (keyctl,
+        #       ptrace on other processes, userfaultfd, bpf, ...) while keeping
+        #       broad application compatibility. Kubernetes does NOT apply it
+        #       unless you ask. `Unconfined` means no filter at all.
+        #
+        #       A custom Localhost profile is stricter still, but you must
+        #       profile the app first - see docs/04, seccomp section.
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: helloctr
+          # [2.14] [2.15] Pin by DIGEST, not by tag. A digest is content-
+          #        addressed: it cannot be repointed at different bytes. It also
+          #        means an old, vulnerable image cannot be silently reintroduced
+          #        by a tag that was moved. Requirement 2.15 - remove images no
+          #        longer in use - is the registry-side half of the same problem.
+          #
+          #        Replace with your registry and the digest that CI published:
+          #          registry1.dso.mil/ironbank/.../helloctr@sha256:<digest>
+          #
+          #        A concrete version tag is used here rather than :latest so
+          #        the manifest is at least deterministic about WHICH release it
+          #        wants. :latest is the worst of both worlds - it pins nothing
+          #        and it hides that fact.
+          image: localhost/helloctr:1.0.0
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            # [2.5] [2.13] Non-privileged container port only. The Service maps
+            #       80 -> 8080; the container never needs to bind below 1024 and
+            #       therefore never needs CAP_NET_BIND_SERVICE or root.
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          env:
+            - name: PORT
+              value: "8080"
+            # [2.18] A PATH to the secret, not the secret. The value arrives via
+            #        the projected volume below.
+            - name: APP_SECRET_FILE
+              value: /run/secrets/app/token
+
+          securityContext:
+            # [2.3] The kernel refuses any setuid/setgid transition or file
+            #       capability gain for this process tree. Belt and braces with
+            #       the setuid strip in the image: this holds even if a future
+            #       image rebuild reintroduces a setuid binary.
+            allowPrivilegeEscalation: false
+            # Never true. `privileged: true` disables essentially every
+            # isolation mechanism at once - it is root on the node with extra
+            # steps.
+            privileged: false
+            # [3.7] Read-only root filesystem. The image is immutable; changes
+            #       are made by rebuilding and redeploying. Anything writing to
+            #       the root filesystem at runtime is either a bug or an
+            #       attacker staging a payload. Writable paths are granted
+            #       explicitly as tmpfs volumes below.
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1001
+            capabilities:
+              # [2.12] Drop every Linux capability, then add back only what the
+              #        service provably needs. This app needs none: it binds a
+              #        non-privileged port, writes nothing, and changes no
+              #        identity. If you find yourself adding NET_BIND_SERVICE,
+              #        move the port instead.
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+
+          # [3.5] Resource LIMITS - the ceiling. Without them one container can
+          #       consume the node and starve every other workload on it, which
+          #       is a denial of service against the whole node.
+          #
+          #       Note the asymmetry: exceeding a memory limit gets the process
+          #       OOM-killed immediately; exceeding a CPU limit only throttles.
+          #       Some teams deliberately omit the CPU limit to avoid throttling
+          #       latency-sensitive services and rely on requests plus a quota -
+          #       that is a defensible engineering trade-off, but it is a
+          #       deviation from 3.5 and belongs in your documentation.
+          # [3.6] Resource REQUESTS - what the scheduler reserves. This is how
+          #       the platform decides which node has room. A pod with no
+          #       request gets BestEffort QoS and is the first thing evicted
+          #       under memory pressure.
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+              ephemeral-storage: 256Mi
+
+          # [3.8] LIVENESS probe - "is this process wedged?"
+          #       Answers a question the Dockerfile HEALTHCHECK cannot, because
+          #       Kubernetes ignores HEALTHCHECK entirely. A deadlocked process
+          #       still holds its port open and still looks alive to the
+          #       supervisor; this catches that and restarts it.
+          #
+          #       Keep it cheap and dependency-free. If your liveness probe
+          #       checks the database, a database blip restarts every pod you
+          #       have and turns a degradation into an outage.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # [3.9] READINESS probe - "should this pod get traffic right now?"
+          #       Different question, different answer. Failing readiness pulls
+          #       the pod out of the Service endpoints without killing it, which
+          #       is what you want during start-up, during a dependency outage,
+          #       and while shedding load. THIS is the probe that may check
+          #       downstream dependencies.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # Startup probe: gives a slow-booting app time to come up without
+          # forcing you to set a long initialDelaySeconds on liveness (which
+          # would delay detection of a genuine hang for the whole lifetime of
+          # the pod).
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+            failureThreshold: 20
+
+          volumeMounts:
+            # [3.7] The writable surface, granted explicitly. Everything else
+            #       is read-only.
+            - name: tmp
+              mountPath: /tmp
+            - name: app-secret
+              mountPath: /run/secrets/app
+              readOnly: true
+
+      volumes:
+        # tmpfs (memory-backed): contents never touch node disk and vanish when
+        # the pod does. sizeLimit stops a runaway process filling node memory.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 32Mi
+        - name: app-secret
+          secret:
+            secretName: helloctr-token
+            defaultMode: 0400
+            items:
+              - key: token
+                path: token
+
+      # [3.4] Sensitive host directories must not be mounted. There is no
+      #       hostPath volume anywhere in this file, and that is the point.
+      #       Mounting /etc, /usr, /var/run/docker.sock, or / gives the
+      #       container the node. If you think you need a hostPath, you almost
+      #       certainly need a CSI driver or a DaemonSet with a narrow,
+      #       reviewed exception instead.
+
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: helloctr
+  namespace: helloctr
+  labels:
+    app.kubernetes.io/name: helloctr
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: helloctr
+  ports:
+    # [2.5] This is the port mapping the guide describes: clients talk to the
+    #       well-known privileged port 80, the container listens on
+    #       unprivileged 8080, and nothing ever runs as root to make it work.
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+# [3.3] PID cgroup limits. Kubernetes exposes per-pod PID limits as a KUBELET
+#       setting (--pod-max-pids) and per-node reserved PIDs, not as a pod field,
+#       so the enforcement lives in node configuration. A LimitRange cannot cap
+#       PIDs, but a ResourceQuota bounds the blast radius of a fork bomb by
+#       capping how many pods and how much memory the namespace can claim.
+#
+#       Node-side (kubelet config), the other half of this control:
+#           podPidsLimit: 1024
+#           supportPodPidsLimit: true
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: helloctr-quota
+  namespace: helloctr
+spec:
+  hard:
+    pods: "10"
+    requests.cpu: "2"
+    requests.memory: 2Gi
+    limits.cpu: "4"
+    limits.memory: 4Gi
+---
+# [3.5] [3.6] A LimitRange makes the requirement enforceable rather than
+#       aspirational: a pod submitted with no resources block is REJECTED, and
+#       one with no limits gets the default applied. Without this, "we set
+#       resource limits" is a code-review convention that fails the first time
+#       someone is in a hurry.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: helloctr-limits
+  namespace: helloctr
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 128Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+      max:
+        cpu: "2"
+        memory: 1Gi

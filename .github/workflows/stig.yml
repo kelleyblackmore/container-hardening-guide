@@ -1,0 +1,126 @@
+# =============================================================================
+#  OpenSCAP DISA STIG evaluation
+# =============================================================================
+#  Separate from ci.yml because it is slow (it installs the SCAP content and
+#  evaluates a few hundred rules) and because its output is an ARTIFACT for an
+#  assessor, not a pass/fail signal for a developer.
+#
+#  It runs twice, deliberately:
+#
+#    BASELINE  the published DISA profile, untouched. This is what an assessor
+#              would run. It is the honest number.
+#    TAILORED  with the answer file applied, deselecting the rules a human
+#              determined are Not Applicable to a container.
+#
+#  The DELTA between them is the set of decisions you have to defend. If it
+#  grows without a corresponding entry in oscap/not-applicable.rules and a
+#  justification, someone is hiding findings rather than fixing them.
+#
+#  Read: docs/05-openscap-and-tailoring.md
+# =============================================================================
+name: stig
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/hardened/**'
+      - 'oscap/**'
+      - '.github/workflows/stig.yml'
+  pull_request:
+    paths:
+      - 'examples/hardened/**'
+      - 'oscap/**'
+  schedule:
+    # 4.3.7 Monitoring: re-evaluate weekly. The SCAP content is updated on its
+    # own release cadence, so a rule that passed last quarter can start failing
+    # without a single line of this repository changing.
+    - cron: '43 5 * * 2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stig:
+    name: OpenSCAP (baseline vs tailored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the hardened image
+        run: docker build -f examples/hardened/Dockerfile -t localhost/helloctr:latest examples/hardened
+
+      - name: Build the scanner image (image + oscap + SCAP content)
+        run: |
+          docker build -f oscap/Containerfile.scan \
+            --build-arg BASE_IMAGE=localhost/helloctr:latest \
+            -t localhost/helloctr-scan:latest .
+
+      - name: Run baseline and tailored scans
+        run: ./oscap/run-oscap.sh
+        env:
+          RUNTIME: docker
+          IMAGE_APP: localhost/helloctr:latest
+          IMAGE_SCAN: localhost/helloctr-scan:latest
+
+      - name: Publish the summaries to the job summary
+        if: always()
+        run: |
+          {
+            echo "# DISA RHEL 9 STIG evaluation"
+            echo ""
+            echo "## Baseline - published profile, no tailoring"
+            echo '```'
+            cat results/baseline/summary.txt 2>/dev/null || echo "(no baseline summary)"
+            echo '```'
+            echo ""
+            echo "## Tailored - answer file applied"
+            echo '```'
+            cat results/tailored/summary.txt 2>/dev/null || echo "(no tailored summary)"
+            echo '```'
+            echo ""
+            echo "## Rules deselected as Not Applicable"
+            echo ""
+            echo "Each of these is a documented human decision, not an automated"
+            echo "exclusion. Justifications: \`oscap/not-applicable.rules\`."
+            echo '```'
+            grep -vE '^\s*(#|$)' oscap/not-applicable.rules || echo "(none)"
+            echo '```'
+            echo ""
+            echo "## Failing rules (tailored run)"
+            echo '```'
+            head -60 results/tailored/failed-rules.txt 2>/dev/null || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The full ARF is the artifact an assessor ingests into STIG Viewer or
+      # eMASS. Keep it for 90 days so it outlives the sprint it was produced in.
+      - name: Upload the scan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openscap-results
+          path: results/
+          retention-days: 90
+
+      # NOT a hard gate on the score. Deliberately.
+      #
+      # A RHEL STIG applied to a container image will never be 100% without
+      # tailoring, and a gate set to "100% or fail" produces exactly one
+      # behaviour: people add rules to the answer file until it goes green. The
+      # useful gate is on the DELTA - a scan that got worse than the last one,
+      # or an answer file that grew without review. Set THRESHOLD once you have
+      # a baseline you trust, and treat any drop as a review trigger.
+      - name: Report the tailored score
+        if: always()
+        run: |
+          score="$(grep -oE 'score .*: [0-9]+' results/tailored/summary.txt 2>/dev/null | grep -oE '[0-9]+$' || echo 0)"
+          echo "tailored score: ${score}%"
+          THRESHOLD="${THRESHOLD:-0}"
+          if [ "$score" -lt "$THRESHOLD" ]; then
+            echo "::error::STIG score ${score}% is below the ${THRESHOLD}% threshold"
+            exit 1
+          fi
+          echo "::notice::STIG tailored score ${score}% (threshold ${THRESHOLD}%)"

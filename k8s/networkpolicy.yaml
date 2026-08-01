@@ -1,0 +1,92 @@
+# =============================================================================
+#  NETWORK POLICY - default deny, then allow exactly what the service needs
+# =============================================================================
+#  Supports [2.13] (only the ports the service uses) and [3.11] (label
+#  selectors define what a workload may reach) at the platform layer.
+#
+#  Kubernetes networking is flat by default: every pod can reach every other
+#  pod in the cluster, in every namespace. EXPOSE in a Dockerfile does not
+#  restrict anything - it is documentation. NetworkPolicy is the control that
+#  actually limits reachability.
+#
+#  IMPORTANT: NetworkPolicy is enforced by the CNI plugin. Calico, Cilium, and
+#  Antrea enforce it; some managed clusters ship a CNI that silently ignores it.
+#  Applying this file and assuming you are segmented, without confirming your
+#  CNI enforces policy, is a common and expensive mistake. Verify with a test
+#  pod and `kubectl exec ... nc -zv`.
+# =============================================================================
+---
+# Rule 1: deny everything. Policies are additive and default-allow, so the only
+# way to get a default-deny posture is to write one that selects all pods and
+# permits nothing. Everything after this is an explicit exception.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: helloctr
+spec:
+  podSelector: {}          # {} = every pod in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Rule 2: allow DNS egress. Without this, nothing resolves and every pod looks
+# broken in a way that takes an afternoon to diagnose. This is the single most
+# common omission after applying a default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: helloctr
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: helloctr
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Rule 3: allow ingress on 8080, and only from workloads that are labelled as
+# permitted callers. Note this selects on LABELS, not IP addresses - pod IPs are
+# ephemeral, labels are the stable identity. This is requirement [3.11] doing
+# real work rather than being decoration.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-http-ingress
+  namespace: helloctr
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: helloctr
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # An ingress controller in its own namespace...
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+        # ...and anything in this namespace explicitly labelled as a client.
+        - podSelector:
+            matchLabels:
+              helloctr-client: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+# No egress rule to the internet, no egress to the API server, no egress to the
+# node's metadata endpoint (169.254.169.254 - the classic credential-theft
+# target in cloud environments). The app needs none of them, so it gets none of
+# them. Add an exception only with a named destination and a reason.
