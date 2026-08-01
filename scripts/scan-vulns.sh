@@ -114,7 +114,9 @@ if have syft; then
   echo "==> SBOM: $OUT/sbom.cdx.json (CycloneDX), $OUT/sbom.spdx.json (SPDX)"
   # Scan the SBOM rather than the image - same answer, no image pull required,
   # and it works for an image you no longer have locally.
-  have grype && grype "sbom:$OUT/sbom.cdx.json" -o table > "$OUT/grype-from-sbom.txt" 2>/dev/null || true
+  if have grype; then
+    grype "sbom:$OUT/sbom.cdx.json" -o table > "$OUT/grype-from-sbom.txt" 2>/dev/null || true
+  fi
 fi
 echo
 

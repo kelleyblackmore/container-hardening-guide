@@ -78,7 +78,9 @@ echo "  no sshd binary, no openssh-server package"
 # this catches anything the base image brought along.
 echo "==> removing build and fetch tooling"
 for pkg in gcc gcc-c++ make cmake git subversion; do
-  rpm -q "$pkg" >/dev/null 2>&1 && dnf -y remove "$pkg" >/dev/null 2>&1 || true
+  if rpm -q "$pkg" >/dev/null 2>&1; then
+    dnf -y remove "$pkg" >/dev/null 2>&1 || true
+  fi
 done
 
 # Clean up whatever the removals left behind, in this same layer.
