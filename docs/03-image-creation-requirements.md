@@ -1,6 +1,7 @@
 # 3. Container Image Creation — All 18 Requirements
 
 > DISA Container Image Creation and Deployment Guide V2R0.6, §2
+> — full text: [`reference/`](../reference/DISA-Container-Image-Creation-and-Deployment-Guide-V2R0.6.md#2-container-image-creation)
 
 Each requirement below gives the IA control and CCI from the guide, what it
 means, how it is implemented in this repository, and the command that proves it.

@@ -1,6 +1,7 @@
 # 4. Container Deployment — All 11 Requirements
 
 > DISA Container Image Creation and Deployment Guide V2R0.6, §3
+> — full text: [`reference/`](../reference/DISA-Container-Image-Creation-and-Deployment-Guide-V2R0.6.md#3-container-deployment)
 
 > While much of the container's security is built into the container image,
 > there are security practices and settings that should be considered to protect

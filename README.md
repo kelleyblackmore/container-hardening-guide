@@ -67,6 +67,8 @@ k8s/                        deployment hardening — §3.1 through §3.11
 scripts/                    scan-vulns.sh, scan-secrets.sh, check-k8s-policy.py
 .github/workflows/          ci.yml (lint→build→scan→assert), stig.yml (OpenSCAP)
 docs/                       the twelve chapters
+reference/                  the DISA guide itself, so every [2.x] tag in this
+                            repo resolves to the words it came from
 ```
 
 ---
@@ -201,6 +203,14 @@ it. Do not deploy it.
 
 DISA, *Container Image Creation and Deployment Guide*, Version 2, Release 0.6,
 02 November 2020. Distribution Statement A — approved for public release.
+
+A text transcription is vendored at
+[`reference/`](reference/DISA-Container-Image-Creation-and-Deployment-Guide-V2R0.6.md)
+so every `[2.x]` and `[3.x]` tag in this repository resolves to the requirement
+it came from without leaving the repo. It is a convenience copy — for an
+assessment, use the official PDF from
+[public.cyber.mil](https://public.cyber.mil/stigs/). See
+[`reference/README.md`](reference/README.md) for provenance and caveats.
 
 Related: [NIST SP 800-190](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-190.pdf) ·
 [NIST SP 800-52r2](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-52r2.pdf) ·

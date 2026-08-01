@@ -1,6 +1,7 @@
 # 9. The DevSecOps Pipeline
 
 > DISA Container Image Creation and Deployment Guide V2R0.6, §4
+> — full text: [`reference/`](../reference/DISA-Container-Image-Creation-and-Deployment-Guide-V2R0.6.md#4-devsecops)
 
 Section 4 describes the process the controls live inside. It is deliberately not
 prescriptive:

@@ -1,6 +1,7 @@
 # 1. Anatomy of a Container Image
 
 > DISA Container Image Creation and Deployment Guide V2R0.6, §1.2
+> — full text: [`reference/`](../reference/DISA-Container-Image-Creation-and-Deployment-Guide-V2R0.6.md#12-technology)
 
 You cannot harden a thing you cannot describe. This page describes the thing.
 
