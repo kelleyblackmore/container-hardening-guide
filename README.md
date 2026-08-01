@@ -1,5 +1,9 @@
 # Container Hardening Guide
 
+[![ci](https://github.com/kelleyblackmore/container-hardening-guide/actions/workflows/ci.yml/badge.svg)](https://github.com/kelleyblackmore/container-hardening-guide/actions/workflows/ci.yml)
+[![stig](https://github.com/kelleyblackmore/container-hardening-guide/actions/workflows/stig.yml/badge.svg)](https://github.com/kelleyblackmore/container-hardening-guide/actions/workflows/stig.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **What a container image is actually made of, and how to harden it — layer by
 layer, requirement by requirement — following the DISA *Container Image Creation
 and Deployment Guide*, V2R0.6.**
