@@ -111,6 +111,23 @@ a fraction of them. It has no way to see:
 | Deleted-but-still-in-a-layer files | no layer awareness | TruffleHog `docker` mode |
 | Missing `HEALTHCHECK` | no rule for it | `docker inspect` assertion in CI |
 | Whether the image runs read-only | it does not run anything | `make verify` |
+| A **single-stage build** shipping the compiler | there is no rule for it | `make compare-stages`, [docs/13](13-multi-stage-builds.md) |
+
+That last row is worth trying yourself:
+
+```bash
+hadolint --config .hadolint.yaml examples/single-stage/Dockerfile   # exits 0
+```
+
+[`examples/single-stage/Dockerfile`](../examples/single-stage/Dockerfile) passes
+hadolint **cleanly**. It has a `USER`, a tagged base from an allowed registry, a
+`HEALTHCHECK`, exec-form `ENTRYPOINT`, no `ADD`, no secrets — every rule
+satisfied. It also produces a 1.35 GB image containing the Go compiler, git, and
+your source code, with 12 fixable HIGH CVEs.
+
+A linter checks the instructions you wrote. It has no opinion about the
+*architecture* of your build, and that is where most of the size and most of the
+attack surface is decided.
 
 That last column is the whole pipeline. hadolint is the first gate, not the gate.
 

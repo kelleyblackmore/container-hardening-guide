@@ -331,6 +331,90 @@ jobs:
           retention-days: 30
 
   # ===========================================================================
+  # Teaching artifact: build the SAME app single-stage and measure the gap
+  # ===========================================================================
+  # Not a gate on the hardened image - it is a gate on the CLAIM. docs/13 states
+  # specific numbers; this job regenerates them on every run so the doc cannot
+  # quietly drift from reality. The two assertions at the end are the load-
+  # bearing ones: the single-stage image must be larger and must contain the
+  # toolchain. If that ever stops being true, the chapter is wrong.
+  compare-stages:
+    name: multi-stage comparison (docs/13)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: image, path: /tmp }
+      - run: docker load -i /tmp/image.tar
+
+      - name: Build the single-stage counterexample
+        # Same build context as the hardened image, so both compile identical source.
+        run: |
+          docker build -f examples/single-stage/Dockerfile \
+            -t localhost/helloctr-singlestage:latest examples/hardened
+
+      - name: Measure
+        run: |
+          SINGLE=localhost/helloctr-singlestage:latest
+          size_s=$(docker images --format '{{.Size}}' "$SINGLE" | head -1)
+          size_m=$(docker images --format '{{.Size}}' "$IMAGE"  | head -1)
+          bytes_s=$(docker inspect --format '{{.Size}}' "$SINGLE")
+          bytes_m=$(docker inspect --format '{{.Size}}' "$IMAGE")
+          lay_s=$(docker inspect --format '{{len .RootFS.Layers}}' "$SINGLE")
+          lay_m=$(docker inspect --format '{{len .RootFS.Layers}}' "$IMAGE")
+          pkg_s=$(docker run --rm --entrypoint /bin/sh "$SINGLE" -c "dpkg -l | grep -c '^ii'")
+          pkg_m=$(docker run --rm --entrypoint /bin/bash "$IMAGE" -c 'rpm -qa | wc -l')
+          tc_s=$(docker run --rm --entrypoint /bin/bash "$SINGLE" -c 'command -v go gcc git 2>/dev/null | wc -l')
+          tc_m=$(docker run --rm --entrypoint /bin/bash "$IMAGE"  -c 'command -v go gcc git 2>/dev/null | wc -l')
+          src_s=$(docker run --rm --entrypoint /bin/bash "$SINGLE" -c 'ls /src 2>/dev/null | wc -l')
+          src_m=$(docker run --rm --entrypoint /bin/bash "$IMAGE"  -c 'ls /src 2>/dev/null | wc -l')
+          sha_s=$(docker run --rm --entrypoint /bin/bash "$SINGLE" -c 'sha256sum /usr/local/bin/helloctr' | cut -d' ' -f1)
+          sha_m=$(docker run --rm --entrypoint /bin/bash "$IMAGE"  -c 'sha256sum /app/helloctr' | cut -d' ' -f1)
+
+          {
+            echo "## Single-stage vs multi-stage"
+            echo ""
+            echo "Same source, same compiler, same flags — only the packaging differs."
+            echo ""
+            echo "| | single-stage | two-stage |"
+            echo "|---|---|---|"
+            echo "| image size | $size_s | $size_m |"
+            echo "| layers | $lay_s | $lay_m |"
+            echo "| OS packages | $pkg_s | $pkg_m |"
+            echo "| go/gcc/git present | $tc_s binaries | $tc_m binaries |"
+            echo "| source left in image | $src_s files | $src_m files |"
+            echo "| runtime binary sha256 | \`${sha_s:0:16}…\` | \`${sha_m:0:16}…\` |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # The claims docs/13 makes. If these stop holding, the chapter is stale.
+          [ "$bytes_s" -gt "$bytes_m" ] || { echo "::error::single-stage image is not larger — docs/13 is out of date"; exit 1; }
+          [ "$tc_s" -gt 0 ]             || { echo "::error::single-stage image has no toolchain — the counterexample is broken"; exit 1; }
+          [ "$tc_m" -eq 0 ]             || { echo "::error::toolchain leaked into the hardened image"; exit 1; }
+          [ "$src_m" -eq 0 ]            || { echo "::error::source code leaked into the hardened image"; exit 1; }
+          [ "$sha_s" = "$sha_m" ]       || { echo "::warning::binaries differ between the two builds; the comparison is no longer apples-to-apples"; }
+          echo "::notice::single-stage $size_s vs two-stage $size_m; identical binary: $([ "$sha_s" = "$sha_m" ] && echo yes || echo no)"
+
+      # Non-blocking: the point is the delta, and the single-stage image is not
+      # something we would ever fix.
+      - name: CVE delta (advisory)
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          {
+            echo "### Fixable HIGH/CRITICAL"
+            echo '```'
+            echo "single-stage:"
+            trivy image -q --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln \
+              --format table localhost/helloctr-singlestage:latest 2>/dev/null | tail -30 || true
+            echo ""
+            echo "two-stage:"
+            trivy image -q --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln \
+              --format table "$IMAGE" 2>/dev/null | tail -20 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===========================================================================
   # 4.3.6  Configuring - the deployment manifests are code and get reviewed too
   # ===========================================================================
   k8s-policy:

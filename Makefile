@@ -8,6 +8,7 @@ IMAGE_TAG   ?= latest
 IMAGE       ?= $(IMAGE_NAME):$(IMAGE_TAG)
 IMAGE_SCAN  ?= localhost/helloctr-scan:latest
 IMAGE_BAD   ?= localhost/helloctr-insecure:latest
+IMAGE_SINGLE ?= localhost/helloctr-singlestage:latest
 
 RESULTS     ?= results
 TOOLS_BIN   ?= $(CURDIR)/.tools/bin
@@ -15,6 +16,7 @@ export PATH := $(TOOLS_BIN):$(PATH)
 
 HARDENED_DIR := examples/hardened
 INSECURE_DIR := examples/insecure
+SINGLE_DIR   := examples/single-stage
 
 .PHONY: help
 help:
@@ -24,6 +26,8 @@ help:
 	@echo "    make build            Build the hardened image ($(IMAGE))"
 	@echo "    make rebuild          Build with --no-cache --pull  [req 2.8, 2.15]"
 	@echo "    make digests          Print the digests of the base images  [req 2.14]"
+	@echo "    make compare-stages   Build the app single-stage vs multi-stage and"
+	@echo "                          measure the difference               (docs/13)"
 	@echo ""
 	@echo "  LINT                                              (docs/06-hadolint.md)"
 	@echo "    make lint             hadolint the hardened Dockerfile"
@@ -72,12 +76,54 @@ build-insecure:
 	@sleep 5
 	$(RUNTIME) build -f $(INSECURE_DIR)/Dockerfile -t "$(IMAGE_BAD)" $(INSECURE_DIR)
 
+# Build the SAME application both ways and measure the difference.
+# docs/13-multi-stage-builds.md explains what the numbers mean.
+#
+# Note the build context: the single-stage Dockerfile lives in its own directory
+# but builds from examples/hardened, so both images compile identical source.
+.PHONY: build-single-stage
+build-single-stage:
+	$(RUNTIME) build -f $(SINGLE_DIR)/Dockerfile -t "$(IMAGE_SINGLE)" $(HARDENED_DIR)
+
+.PHONY: compare-stages
+compare-stages: build build-single-stage
+	@echo ""
+	@echo "==================================================================="
+	@echo " SINGLE-STAGE vs MULTI-STAGE - same source, same binary"
+	@echo "==================================================================="
+	@printf '%-34s %-18s %s\n' "" "single-stage" "two-stage"
+	@printf '%-34s %-18s %s\n' "image size" \
+	  "$$($(RUNTIME) images --format '{{.Size}}' $(IMAGE_SINGLE) | head -1)" \
+	  "$$($(RUNTIME) images --format '{{.Size}}' $(IMAGE) | head -1)"
+	@printf '%-34s %-18s %s\n' "layers" \
+	  "$$($(RUNTIME) inspect --format '{{len .RootFS.Layers}}' $(IMAGE_SINGLE))" \
+	  "$$($(RUNTIME) inspect --format '{{len .RootFS.Layers}}' $(IMAGE))"
+	@printf '%-34s %-18s %s\n' "OS packages" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/sh $(IMAGE_SINGLE) -c "dpkg -l | grep -c '^ii'")" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE) -c 'rpm -qa | wc -l')"
+	@printf '%-34s %-18s %s\n' "build toolchain present" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE_SINGLE) -c 'command -v go gcc git 2>/dev/null | wc -l') binaries" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE) -c 'command -v go gcc git 2>/dev/null | wc -l') binaries"
+	@printf '%-34s %-18s %s\n' "source code left in image" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE_SINGLE) -c 'ls /src 2>/dev/null | wc -l') files" \
+	  "$$($(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE) -c 'ls /src 2>/dev/null | wc -l') files"
+	@echo ""
+	@echo "--- the runtime binary is the SAME in both (sha256) ---"
+	@$(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE_SINGLE) -c 'sha256sum /usr/local/bin/helloctr'
+	@$(RUNTIME) run --rm --entrypoint /bin/bash $(IMAGE) -c 'sha256sum /app/helloctr'
+	@echo ""
+	@echo "--- everything above except the binary is packaging you chose to ship ---"
+	@echo "--- now compare CVE counts:  make scan-vulns  vs the command below ---"
+	@echo "      trivy image --severity HIGH,CRITICAL --ignore-unfixed $(IMAGE_SINGLE)"
+	@echo ""
+	@echo "Write-up: docs/13-multi-stage-builds.md"
+
 # [2.14] Resolve tags to digests. Paste these into the Dockerfile ARGs to pin
 # the build to bytes rather than to a mutable name.
 .PHONY: digests
 digests:
 	@echo "Base image digests - pin these in $(HARDENED_DIR)/Dockerfile:"
-	@for img in registry.access.redhat.com/ubi9/ubi:9.6 docker.io/library/golang:1.23-bookworm; do \
+	@for img in registry.access.redhat.com/ubi9/ubi:9.6 docker.io/library/golang:1.26-bookworm; do \
 	  echo "  $$img"; \
 	  $(RUNTIME) buildx imagetools inspect "$$img" 2>/dev/null | grep -m1 -i '^Digest:' || \
 	    { $(RUNTIME) pull -q "$$img" >/dev/null && \
@@ -212,4 +258,4 @@ $(TOOLS_BIN):
 .PHONY: clean
 clean:
 	rm -rf "$(RESULTS)" .tools
-	-$(RUNTIME) rmi -f "$(IMAGE)" "$(IMAGE_SCAN)" "$(IMAGE_BAD)" 2>/dev/null
+	-$(RUNTIME) rmi -f "$(IMAGE)" "$(IMAGE_SCAN)" "$(IMAGE_BAD)" "$(IMAGE_SINGLE)" 2>/dev/null

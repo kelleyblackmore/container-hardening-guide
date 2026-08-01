@@ -30,6 +30,7 @@ make stig              # OpenSCAP STIG scan: baseline vs tailored
 |---|---|
 | understand what an image *is* — layers, manifest, config, why deletion doesn't delete | [1. Anatomy of a Container Image](docs/01-anatomy-of-a-container-image.md) |
 | know what to do at each layer | [2. Layer-by-Layer Hardening](docs/02-layer-by-layer-hardening.md) |
+| understand multi-stage builds — one Dockerfile, many `FROM`s | [13. Multi-Stage Builds](docs/13-multi-stage-builds.md) |
 | look up one requirement | [3. Image Creation §2](docs/03-image-creation-requirements.md) · [4. Deployment §3](docs/04-deployment-requirements.md) |
 | STIG a container end to end | [10. Walkthrough](docs/10-stig-a-container-walkthrough.md) |
 | use OpenSCAP and write a tailoring file | [5. OpenSCAP and Tailoring](docs/05-openscap-and-tailoring.md) |
@@ -66,7 +67,7 @@ k8s/                        deployment hardening — §3.1 through §3.11
 
 scripts/                    scan-vulns.sh, scan-secrets.sh, check-k8s-policy.py
 .github/workflows/          ci.yml (lint→build→scan→assert), stig.yml (OpenSCAP)
-docs/                       the twelve chapters
+docs/                       the thirteen chapters
 reference/                  the DISA guide itself, so every [2.x] tag in this
                             repo resolves to the words it came from
 ```
@@ -156,6 +157,7 @@ make scan-vulns     # Trivy + Grype + Syft SBOM, with the scanner diff
 make stig           # OpenSCAP: baseline scan, tailored scan, HTML + ARF
 make scan-all       # all of the above
 make digests        # print base image digests to pin (§2.14)
+make compare-stages # build the app single-stage vs multi-stage, measure the gap
 ```
 
 ---

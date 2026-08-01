@@ -23,7 +23,7 @@ verified, and which tool enforces it.
 | 2.9 | No confidential data in build files | CM-6 b | CCI-000366 | [`.dockerignore`](../examples/hardened/.dockerignore), BuildKit secrets | `docker history` grep + TruffleHog | CI `secrets`, `evidence` |
 | 2.10 | Created from signed base images | CM-5 (3) | CCI-001749 | digest-pinned `FROM` | `cosign verify`, `skopeo inspect` | manual + admission |
 | 2.11 | Created with verified packages | CM-5 (3) | CCI-001749 | `gpgcheck=1` + signature assertion in step 3 | build fails on unsigned RPM | build |
-| 2.12 | Only essential capabilities | CM-7 a | CCI-000381 | multi-stage, `install_weak_deps=0`, package removal | package count; `capabilities.drop: [ALL]` | CI + `check-k8s-policy.py` |
+| 2.12 | Only essential capabilities | CM-7 a | CCI-000381 | [multi-stage build](13-multi-stage-builds.md), `install_weak_deps=0`, package removal | package count; `capabilities.drop: [ALL]` | CI + `check-k8s-policy.py` |
 | 2.13 | Only required ports enabled | CM-7 (1)(b) | CCI-001762 | one `EXPOSE`; [`networkpolicy.yaml`](../k8s/networkpolicy.yaml) | exposed-port assertion | CI `evidence` |
 | 2.14 | DoD-approved base image | SC-8 (2) | CCI-002422 | `ARG RUNTIME_IMAGE`, `make digests` | hadolint DL3026 `allowed-registries` | CI `lint` |
 | 2.15 | Remove superseded images | SI-2 (6) | CCI-002617 | deploy by digest; registry retention | `crane ls` / `skopeo list-tags` | registry policy |

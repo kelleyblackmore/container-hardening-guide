@@ -48,9 +48,15 @@ need to produce an artifact and nothing you need to run it.
 **What to do:** produce exactly one artifact and let the stage be discarded.
 
 A multi-stage build is the highest-leverage hardening move available, and it is
-free. A Go toolchain image is ~800 MB and carries its own CVE feed. None of it
+free. The Go toolchain image is 1.2 GB and carries its own CVE feed. None of it
 reaches production because none of it crosses the stage boundary. The same
 applies to `npm ci --include=dev`, Maven, pip's build deps, and `make`.
+
+**[docs/13](13-multi-stage-builds.md) covers the technique in full** — more than
+two stages, `--target`, the patterns for Node/Python/Java/Rust, what it does
+*not* fix, and a measured single-stage-vs-multi-stage comparison of this
+repository's own image (1.35 GB vs 581 MB, 12 fixable CVEs vs 0, byte-identical
+binary).
 
 **Verify:**
 ```bash
@@ -144,7 +150,7 @@ verify signatures, and clean up **in the same `RUN`**.
 
 ```dockerfile
 RUN set -eux; \
-    dnf -y --refresh upgrade --security --setopt=install_weak_deps=0 --nodocs; \
+    dnf -y --refresh upgrade --setopt=install_weak_deps=0 --nodocs; \
     dnf -y clean all; \
     rm -rf /var/cache/dnf /tmp/* /var/tmp/*
 ```
@@ -155,10 +161,32 @@ Line by line:
 |---|---|
 | `set -eux` | fail on first error; print each command. Without `-e` a failed install is a successful build. |
 | `--refresh` | expire cached metadata so a cached layer cannot serve a stale package list (§2.8) |
-| `upgrade --security` | apply security errata |
+| `upgrade` (not `upgrade --security`) | see the warning below — on UBI, `--security` upgrades almost nothing |
 | `install_weak_deps=0` | do not silently pull in "recommended" packages (§2.12) |
 | `--nodocs` | man pages and licences are not needed at runtime |
 | `clean all` + `rm -rf` **in the same RUN** | otherwise the cache ships in a lower layer (§1.3) |
+
+### `--security` is a trap on UBI
+
+The obvious thing to write is `dnf upgrade --security`: apply security errata,
+skip the rest, keep the image small. It is what this repository did first, and it
+shipped **33 fixable HIGH CVEs**.
+
+`--security` filters to packages named in a security advisory. UBI's published
+repository metadata carries little to no `updateinfo`, so dnf has almost nothing
+to match against and upgrades close to nothing. The build succeeds, the log looks
+correct, and the image goes out with months of already-fixed CVEs in it. Red Hat
+also ships plenty of CVE fixes in *bugfix* errata, which `--security` skips even
+where the metadata is complete.
+
+Check it on your own base rather than taking this on faith:
+
+```bash
+dnf -q updateinfo list security     # what --security would act on
+dnf -q check-update                 # what a full upgrade would act on
+```
+
+If the first list is much shorter than the second, use the full upgrade.
 
 ### Version pinning: the real trade-off
 
