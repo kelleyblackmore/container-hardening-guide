@@ -222,7 +222,7 @@ Two distinct problems:
 
 **Implement**
 ```dockerfile
-RUN dnf -y --refresh upgrade --security && dnf -y clean all && rm -rf /var/cache/dnf
+RUN dnf -y --refresh upgrade && dnf -y clean all && rm -rf /var/cache/dnf
 ```
 ```bash
 docker build --no-cache --pull -t IMG .      # make rebuild — on a schedule

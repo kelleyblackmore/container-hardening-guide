@@ -55,8 +55,8 @@ applies to `npm ci --include=dev`, Maven, pip's build deps, and `make`.
 **[docs/13](13-multi-stage-builds.md) covers the technique in full** — more than
 two stages, `--target`, the patterns for Node/Python/Java/Rust, what it does
 *not* fix, and a measured single-stage-vs-multi-stage comparison of this
-repository's own image (1.35 GB vs 581 MB, 12 fixable CVEs vs 0, byte-identical
-binary).
+repository's own image: ~2.3x the size, 12 fixable CVEs vs 0, and a
+byte-identical binary.
 
 **Verify:**
 ```bash
@@ -201,7 +201,7 @@ Pick one and be explicit:
   version is superseded. This is the strongest position and it costs you a
   weekly PR queue.
 - **Do not pin, and pin the base by digest instead.** The base digest fixes the
-  starting point; `upgrade --security` moves you forward from it. The build is
+  starting point; `dnf upgrade` moves you forward from it. The build is
   reproducible *given the same repository state*, which is weaker but honest.
 
 This repo takes the second path and says so in [`.hadolint.yaml`](../.hadolint.yaml),

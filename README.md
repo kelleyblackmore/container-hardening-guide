@@ -53,6 +53,10 @@ examples/hardened/          the reference image — every line annotated with th
 examples/insecure/          the same idea built wrong — every line tagged with
   Dockerfile                the requirement it VIOLATES. Lint it, scan it.
 
+examples/single-stage/      the same app built in ONE stage instead of two, so
+  Dockerfile                the difference can be measured rather than asserted:
+                            ~2.3x the size, 12 fixable CVEs vs 0, identical binary
+
 oscap/                      the OpenSCAP workflow
   run-oscap.sh              baseline scan + tailored scan + diff
   Containerfile.scan        throwaway scanner layer (image + oscap + SCAP content)

@@ -68,7 +68,7 @@ the **exact same application from the exact same source** in one stage.
 
 | | single-stage | two-stage | |
 |---|---|---|---|
-| **Image size** | **1.35 GB** | **581 MB** | 2.3× |
+| **Image size** | 1.35 GB / 926 MB | 581 MB / 396 MB | **≈2.3×** |
 | Layers | 12 | 8 | |
 | OS packages | 205 (dpkg) | 188 (rpm) | |
 | `go`, `gcc`, `git` in the image | **yes** | no | |
@@ -81,7 +81,20 @@ That last row is the argument in one line. **The thing that runs is byte-for-byt
 the same binary.** Everything in the other rows is packaging you chose to ship,
 not capability you gained.
 
-Two of these deserve a closer look.
+> **Why two size figures.** The first is Docker Desktop with buildx (which adds
+> a manifest list and attestation manifests, inflating what `docker images`
+> reports); the second is the GitHub Actions runner. Absolute sizes move with
+> the builder, the exporter, and the base image of the week — **the ratio is the
+> stable part**, and it was 2.3× in both environments.
+>
+> Do not trust the numbers in this table, including when they are right. Run
+> `make compare-stages` and read your own, or open the *multi-stage comparison*
+> job summary on any CI run, which regenerates the whole table from live images.
+> The CI job also asserts the claims that must not drift: the single-stage image
+> must be larger, it must contain the toolchain, and the hardened image must
+> contain neither the toolchain nor the source.
+
+Three of these rows deserve a closer look.
 
 ### "Go binaries Trivy has to scan: 11"
 
@@ -148,7 +161,7 @@ hadolint --config .hadolint.yaml examples/single-stage/Dockerfile   # exits 0
 The single-stage Dockerfile **passes hadolint cleanly**. It has a `USER`, a
 tagged base from an allowed registry, a `HEALTHCHECK`, an exec-form
 `ENTRYPOINT`, no `ADD`, no embedded secrets. Every rule satisfied. And it is
-1.35 GB with a compiler in it.
+2.3x the size of the hardened image, with a compiler in it.
 
 There is no `DL####` for "you shipped your build environment", because it is not
 a property of any single instruction — it is the shape of the whole file. Same

@@ -56,8 +56,9 @@ unexplained ignore list is how a linter quietly stops linting.
 
 This repo ignores exactly one rule, `DL3041` (pin RPM versions), with the
 reasoning spelled out: pinning makes builds reproducible (§2.4) but makes them
-rot (§2.15), and the position taken here is digest-pinned base + `upgrade
---security` on every build. Agree or disagree — but the decision is written down.
+rot (§2.15), and the position taken here is a digest-pinned base plus a full
+`dnf upgrade` on every build. Agree or disagree — but the decision is written
+down.
 
 Inline suppression, when it is genuinely a one-off:
 ```dockerfile
@@ -122,14 +123,16 @@ hadolint --config .hadolint.yaml examples/single-stage/Dockerfile   # exits 0
 [`examples/single-stage/Dockerfile`](../examples/single-stage/Dockerfile) passes
 hadolint **cleanly**. It has a `USER`, a tagged base from an allowed registry, a
 `HEALTHCHECK`, exec-form `ENTRYPOINT`, no `ADD`, no secrets — every rule
-satisfied. It also produces a 1.35 GB image containing the Go compiler, git, and
-your source code, with 12 fixable HIGH CVEs.
+satisfied. It also produces an image roughly 2.3x the size of the hardened one,
+containing the Go compiler, git, and your source code, with 12 fixable HIGH
+CVEs.
 
 A linter checks the instructions you wrote. It has no opinion about the
 *architecture* of your build, and that is where most of the size and most of the
 attack surface is decided.
 
-That last column is the whole pipeline. hadolint is the first gate, not the gate.
+The "Caught by" column above is the rest of the pipeline. hadolint is the first
+gate, not the gate.
 
 ---
 

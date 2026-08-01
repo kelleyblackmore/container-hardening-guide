@@ -57,10 +57,14 @@ ENTRYPOINT ["/usr/local/bin/helloctr"]
 #
 #   [2.12] The Go toolchain, git, and a full Debian userland are present. An
 #          attacker with code execution has a compiler and a fetch tool.
-#   [2.12] ~430 packages instead of ~186.
+#   [2.12] The package COUNT barely moves (205 vs 188) and that is the trap:
+#          the Go toolchain is unpacked into /usr/local/go, outside dpkg
+#          entirely, so ~700 MB of compiler arrives without incrementing any
+#          package-manager metric. See docs/13 section 13.2.
 #   [2.9]  /src still contains your source code. On a private codebase that is
 #          the leak nobody notices, because the image "works".
-#   [2.8]  ~1.2 GB instead of ~82 MB. Every pull, every node, every rollback.
+#   [2.8]  Roughly 2.3x the size of the two-stage image. Every pull, every
+#          node, every rollback.
 #   [2.16] Debian, so the RHEL 9 STIG does not apply - you would need the
 #          Ubuntu/Debian equivalent, and the base image does not ship hardened.
 #

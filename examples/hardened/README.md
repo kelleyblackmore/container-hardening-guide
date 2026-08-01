@@ -38,16 +38,22 @@ variables cannot be hardened into compliance — it can only be waived into it.
 ## The two stages
 
 ```
-STAGE 1  build      golang:1.23   compiler, module cache, headers   -> discarded
+STAGE 1  build      golang:1.26   compiler, module cache, headers   -> discarded
                          │
                     one binary crosses
                          ▼
 STAGE 2  runtime    ubi9:9.6      the image you ship
 ```
 
-The Go toolchain image is ~800 MB and carries its own CVE feed. None of it
+The Go toolchain image is 1.2 GB and carries its own CVE feed. None of it
 reaches production, because none of it crosses the stage boundary. This is the
 highest-leverage line in the file and it costs nothing.
+
+How much it costs to skip: [`examples/single-stage`](../single-stage/Dockerfile)
+builds this same application in one stage instead of two, and the result is
+~2.3x the size with the compiler, git, and your source code inside it, and 12
+fixable HIGH CVEs against this image's 0. Run `make compare-stages` to measure
+it, or read [docs/13](../../docs/13-multi-stage-builds.md).
 
 ---
 
@@ -60,7 +66,7 @@ reasoning: [docs/02](../../docs/02-layer-by-layer-hardening.md).
 |---|---|---|
 | **1** Base | approved registry, pinned, verifiable | §2.10, §2.14, §2.17 |
 | **2** Metadata | OCI labels — what this is and where it came from | auditability |
-| **3** Patch & minimise | `upgrade --security`, remove remote-access packages, assert every RPM is signed, clean in the same `RUN` | §2.1, §2.8, §2.11, §2.12 |
+| **3** Patch & minimise | full `dnf upgrade`, remove remote-access packages, assert every RPM is signed, clean in the same `RUN` | §2.1, §2.8, §2.11, §2.12 |
 | **4** OS hardening | the [`harden/`](harden/) scripts — STIG settings | §2.16 |
 | **5** Strip setuid | `chmod ug-s` everything, then assert none remain | §2.3 |
 | **6** Identity | system account, fixed numeric UID, `nologin` shell | §2.2 |
@@ -78,9 +84,17 @@ silently passes the build. That is how a broken check ships for six months.
 the removal and fail the build otherwise:
 
 ```dockerfile
-! rpm -q openssh-server >/dev/null 2>&1               # §2.1
-[ -z "$unsigned" ] || { echo "unsigned: $unsigned"; exit 1; }   # §2.11
-remaining="$(find / -xdev -perm /6000 -type f)"; [ -z "$remaining" ] || exit 1  # §2.3
+# §2.1  - note the `if`, not `! rpm -q ...`. A negated command is exempt from
+#         errexit, so `! rpm -q openssh-server` does NOT fail the build when the
+#         package IS installed. shellcheck flags it as SC2251; hadolint runs
+#         shellcheck over every RUN, which is how this one was caught here.
+if rpm -q openssh-server >/dev/null 2>&1 || [ -x /usr/sbin/sshd ]; then exit 1; fi
+
+# §2.11 - every installed RPM carries a signature, or the build stops
+[ -z "$unsigned" ] || { echo "unsigned: $unsigned"; exit 1; }
+
+# §2.3  - nothing setuid/setgid survives the strip
+remaining="$(find / -xdev -perm /6000 -type f)"; [ -z "$remaining" ] || exit 1
 ```
 
 A hardening step with no assertion is a comment.
@@ -158,8 +172,11 @@ image, then strip in the application image built `FROM` it.
 **RPM versions are not pinned.** §2.4 wants known outcomes; §2.15 wants old
 vulnerable versions gone. Pins deliver the first and defeat the second, because
 six months later you are reinstalling a version with a known CVE on purpose. The
-position here is: digest-pin the base, `upgrade --security` every build, rebuild
-weekly with `--no-cache`. The reasoning is written into
+position here is: digest-pin the base, run a full `dnf upgrade` every build,
+rebuild weekly with `--no-cache`. Note *full* — `upgrade --security` is close to
+a no-op on UBI and shipped 33 fixable HIGH CVEs before this was caught; the
+reasoning is in the Dockerfile and in
+[docs/02](../../docs/02-layer-by-layer-hardening.md). The reasoning is written into
 [`.hadolint.yaml`](../../.hadolint.yaml) next to the `DL3041` ignore. If your
 organisation requires pinning, delete that ignore and generate the pins from a
 manifest.
