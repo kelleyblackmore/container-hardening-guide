@@ -34,7 +34,15 @@
 #        pin by digest (what you actually ship):
 #           make digests           # prints the current digests
 #           RUNTIME_IMAGE=registry.access.redhat.com/ubi9/ubi@sha256:<digest>
-ARG BUILDER_IMAGE=docker.io/library/golang:1.23-bookworm
+#        The BUILDER version is a security control, not a preference. The Go
+#        standard library is compiled INTO the binary, so a CVE in crypto/tls or
+#        net/url ships inside your application with no package manager entry to
+#        find it. Trivy and Grype read the toolchain version embedded in the
+#        binary and report against it - which is how a stale builder image turns
+#        into a CRITICAL finding on an image containing exactly one file. Track
+#        the current release; do not leave the builder pinned for two years
+#        because "it still compiles".
+ARG BUILDER_IMAGE=docker.io/library/golang:1.26-bookworm
 ARG RUNTIME_IMAGE=registry.access.redhat.com/ubi9/ubi:9.6
 
 # Non-root identity the service runs as. 1001 is conventional for OpenShift-
@@ -151,6 +159,25 @@ LABEL org.opencontainers.image.title="helloctr" \
 #       you last month's package list on a rebuild. Combine with
 #       `docker build --no-cache --pull` in your scheduled rebuild job.
 #
+# [2.15] Why a FULL upgrade and not `upgrade --security`:
+#       `--security` filters to packages named in a security advisory, which
+#       sounds like exactly what you want and is a trap on UBI. UBI's published
+#       repository metadata carries little to no `updateinfo`, so dnf has
+#       almost no advisories to match and `--security` upgrades close to
+#       nothing - the build succeeds, the log looks fine, and the image ships
+#       with months of known-fixed CVEs still in it. This is not hypothetical:
+#       it is what the first CI run of this repository did, and Trivy reported
+#       33 fixable HIGH findings on an image whose build had just claimed to
+#       apply security updates.
+#
+#       Red Hat also ships plenty of CVE fixes in bugfix errata rather than
+#       security errata, so even with complete metadata `--security` would
+#       leave fixes on the table.
+#
+#       Verify the claim rather than trusting this comment:
+#           dnf -q updateinfo list security   # what --security would see
+#           dnf -q check-update               # what a full upgrade would take
+#
 # [2.11] Why nodocs / gpgcheck: install only verified packages. UBI repos have
 #        gpgcheck=1 by default - the `rpm -q --qf %{SIGPMD5}` check below is a
 #        belt-and-braces assertion that packages really are signed.
@@ -163,7 +190,7 @@ LABEL org.opencontainers.image.title="helloctr" \
 #       absent. To inspect a running container use `kubectl exec` / `docker
 #       exec`; to change it, rebuild the image.
 RUN set -eux; \
-    dnf -y --refresh upgrade --security --setopt=install_weak_deps=0 --nodocs; \
+    dnf -y --refresh upgrade --setopt=install_weak_deps=0 --nodocs; \
     \
     # [2.1] Assert the SSH daemon is not present, and remove the client and
     #       other remote-access tooling if the base ever grows them.
